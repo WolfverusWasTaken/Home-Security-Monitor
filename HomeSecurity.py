@@ -2,25 +2,34 @@ import RPi.GPIO as GPIO #import RPi.GPIO module
 from time import sleep
 import adxl345
 import I2C_LCD_driver
-from multiprocessing import Process
+from threading import Thread
 import sys
+from mfrc522 import SimpleMFRC522
+import subprocess
+
+#============IMPORTING FOR REQUESTS==============#
+import requests
+import base64
+import json
+from datetime import datetime
 
 #=================Global-Variable================#
 PWSet = '1'
 door_state = True
 #===============================================#
-
-GPIO.setmode(GPIO.BCM) #choose BCM mode
+GPIO.setmode(GPIO.BOARD) #choose BCM mode
 GPIO.setwarnings(False)
-GPIO.setup(26,GPIO.OUT) #set GPIO 26 as output
-PWM=GPIO.PWM(26,50) #set 50Hz PWM output at GPIO26
-
+GPIO.setup(37,GPIO.OUT) #set GPIO 26 as output
+PWM=GPIO.PWM(37,50) #set 50Hz PWM output at GPIO26
+GPIO.setup(15,GPIO.IN) #set GPIO 22 as input
+GPIO.setup(13, GPIO.OUT)
+#===============================================#
 LCD = I2C_LCD_driver.lcd() #instantiate an lcd object, call it LCD
 sleep(0.5)
 LCD.backlight(0) #turn backlight off
 sleep(0.5)
 LCD.backlight(1) #turn backlight on
-
+#===============================================#
 sleep(1) #wait 1 sec
 LCD.lcd_clear() #clear the display
 #===============================================#
@@ -37,8 +46,8 @@ MATRIX=[ [1,2,3],
          [7,8,9],
          ['*',0,'#']] #layout of keys on keypad
 
-ROW=[6,20,19,13] #row pins
-COL=[12,5,16] #column pins
+ROW=[31,38,35,33] #row pins
+COL=[32,29,36] #column pins
 
 #set column pins as outputs, and write default value of 1 to each
 for i in range(3):
@@ -50,21 +59,42 @@ for j in range(4):
     GPIO.setup(ROW[j],GPIO.IN,pull_up_down=GPIO.PUD_UP)
 #===============================================#
 
+def send_data(status):
+    now = datetime.now().strftime("%m-%d-%Y,%H;%M;%S")
+    url = ""      #insert server url
+    GPIO.output(13,1)
+    subprocess.run(["fswebcam", "./static/"+now+".jpg"])
+    image = open("./static/" +now+".jpg", "rb").read()
+    base64_encoded_data = base64.b64encode(image)
+    base64_message = base64_encoded_data.decode("utf-8")
+    myobj = {"status": status, "image": base64_message, "date": now}
+    myobj = json.dumps(myobj)
+    x = requests.post(url, data=myobj)
+    print(x)
+    GPIO.output(13,0)
+
 def DoorLock(state):
     if state:
         PWM.start(3) #3% duty cycle
+        LCD.lcd_clear() #clear the display
+        LCD.lcd_display_string("Door Locked!", 1)
+        LCD.lcd_display_string("Goodbye!", 2)
         print("Door Locked! Duty Cycle: 3") #3 o'clock position
         sleep(1) #allow time for movement
+        LCD.lcd_clear()
+        LCD.lcd_display_string("Insert password:", 1) #write on line 1
         
-      
     else:
         PWM.start(12) #3% duty cycle
+        LCD.lcd_clear() #clear the display
+        LCD.lcd_display_string("Door Unlocked!", 1)
+        LCD.lcd_display_string("Welcome!", 2)
         print("Door Unlocked! Duty Cycle: 12") #3 o'clock position
+        send_data(status[1])
         sleep(1) #allow time for movement
 
-
-
 def AccDoorCheck():
+    global door_state
     while True:
         x,y,z = acc.get_3_axis_adjusted()
         #print(z) #z: 0.01 - 0.05 safe
@@ -75,6 +105,7 @@ def AccDoorCheck():
                 #take pic
                 #send notif
                 #server send info
+                send_data(status[0])
                 print("Something happens " + str(z))
             else:                       #door is unlocked, therefore door is not being forcefully opened
                 #nothing? not sure
@@ -83,14 +114,13 @@ def AccDoorCheck():
         
 
 def PWInputCheck():
-    
+    global door_state
     PWUser = ''
     PWUserChar = ''
-    global door_state
-    DoorLock(door_state)
+    #global door_state
+    #DoorLock(door_state)
     
     while 1:
-        LCD.lcd_display_string("Insert password:", 1) #write on line 1
         
         for i in range(3): #loop thru’ all columns
             GPIO.output(COL[i],0) #pull one column pin low
@@ -112,41 +142,71 @@ def PWInputCheck():
             if PWUser == PWSet:    #password is correct
                 print("Door is unlocked! Password is Correct!")
                 PWUser=''
-                LCD.lcd_clear() #clear the display
-                LCD.lcd_display_string("Door Unlocked!", 1)
-                LCD.lcd_display_string("Welcome!", 2)
                 door_state = False
                 DoorLock(door_state)
-                    
-                sleep(2)
-                LCD.lcd_clear() #clear the display
-                LCD.lcd_display_string("Door Locked!", 1)
-                LCD.lcd_display_string("Goodbye!", 2)
-                door_state = True
-                DoorLock(door_state)
-                    
-                    
-                    
-                LCD.lcd_clear() #clear the display
     
             elif PWUser != PWSet:  #password is incorrect
                 print("Door still locked! Password is Wrong!")
                 PWUser=''
-                    
-                LCD.lcd_display_string("Wrong Password", 2)
-                sleep(0.2)
-                LCD.lcd_display_string("              ", 2)
-                sleep(0.2)
-                LCD.lcd_display_string("Wrong Password", 2)
-                sleep(0.2)
-                LCD.lcd_display_string("              ", 2)
-                sleep(0.2)
-                LCD.lcd_display_string("Wrong Password", 2)
+                
+         
+                for i in range(3):
+                  sleep(0.2)
+                  LCD.lcd_display_string("              ", 2)
+                  sleep(0.2)
+                  LCD.lcd_display_string("Wrong Password", 2)           
+                
                 sleep(0.5)
            
-                LCD.lcd_clear() #clear the display  
-                    
-                    
+                LCD.lcd_clear() #clear the display
+            
+def RFIDInputCheck():
+    global door_state
+    reader = SimpleMFRC522()
+    auth = []
+    f = open("authlist.txt", "r+")
+    if f.mode == "r+":
+        auth=f.read()
+    while 1:
+        print("Hold card near the reader to check if it is in the database")
+        id = reader.read_id()
+        id = str(id)
+        
 
-Process(target=AccDoorCheck).start()
-Process(target=PWInputCheck).start()
+        if id in auth:
+              number = auth.split('\n')
+              pos = number.index(id)
+
+              door_state = False
+              DoorLock(door_state)
+
+            
+              print("Card with UID", id, "found in database entry #", pos, "; access granted")
+        else:
+              print("Card with UID", id, "not found in database; access denied")
+        sleep(0.3)
+        
+def slideswitch():
+    global door_state
+    while(True): #loop
+        if GPIO.input(15): #if read a high at GPIO 22
+            door_state = True
+            DoorLock(door_state)
+        else: #otherwise (i.e. read a low) at GPIO 22
+            pass
+        sleep(3) # to limit print() frequency
+
+def loopxd():
+    global door_state
+    while True:
+        print(door_state)
+        sleep(1)
+
+door_state = False
+status = ["break in", "normal"]
+
+Thread(target=AccDoorCheck).start()
+Thread(target=PWInputCheck).start()
+Thread(target=RFIDInputCheck).start()
+Thread(target=slideswitch).start()
+Thread(target=loopxd).start()
