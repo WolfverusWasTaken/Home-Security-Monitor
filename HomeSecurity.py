@@ -5,7 +5,6 @@ import I2C_LCD_driver
 from threading import Thread
 import sys
 from mfrc522 import SimpleMFRC522
-import subprocess
 
 #===================================IMPORTING REQUESTS====================================#
 import requests
